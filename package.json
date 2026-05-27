@@ -1,0 +1,90 @@
+{
+  "name": "import-length-sorter",
+  "displayName": "Import Length Sorter",
+  "description": "Sorts import statements by line length (shortest to longest)",
+  "version": "1.1.0",
+  "publisher": "221-BakerScript",
+  "author": "William Louis-Louisy",
+  "license": "MIT",
+  "icon": "icon.png",
+  "keywords": [
+    "import",
+    "sort",
+    "formatter",
+    "typescript",
+    "javascript"
+  ],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Formatters"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "importLengthSorter.sort",
+        "title": "Sort Imports by Length"
+      },
+      {
+        "command": "importLengthSorter.sortDesc",
+        "title": "Sort Imports by Length (Descending)"
+      }
+    ],
+    "configuration": {
+      "title": "Import Length Sorter",
+      "properties": {
+        "importLengthSorter.sortOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically sort imports when saving a file"
+        },
+        "importLengthSorter.order": {
+          "type": "string",
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "default": "asc",
+          "description": "Sort order: 'asc' (shortest first) or 'desc' (longest first)"
+        },
+        "importLengthSorter.addBlankLineBetweenGroups": {
+          "type": "boolean",
+          "default": false,
+          "description": "Add a blank line between import groups (e.g. between node_modules and relative imports)"
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "importLengthSorter.sort",
+        "key": "ctrl+alt+i",
+        "mac": "cmd+alt+i",
+        "when": "editorTextFocus"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "importLengthSorter.sort",
+          "group": "1_modification",
+          "when": "editorTextFocus"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}
