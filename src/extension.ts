@@ -222,7 +222,7 @@ async function sortImportsInEditor(
   if (groups.length === 0) return 0;
 
   let count = 0;
-  await editor.edit((builder) => {
+  await editor.edit((builder: vscode.TextEditorEdit) => {
     for (const group of groups) {
       const newText = sortGroup(group.statements, order, groupSeparator);
       if (newText !== null) {
@@ -285,19 +285,21 @@ export function activate(context: vscode.ExtensionContext) {
     },
   );
 
-  const onSave = vscode.workspace.onWillSaveTextDocument(async (event) => {
-    const config = vscode.workspace.getConfiguration("importLengthSorter");
-    if (!config.get("sortOnSave", false)) return;
-    const editor = vscode.window.visibleTextEditors.find(
-      (e) => e.document === event.document,
-    );
-    if (!editor) return;
-    await sortImportsInEditor(
-      editor,
-      config.get("order", "asc") as Order,
-      config.get("addBlankLineBetweenGroups", false),
-    );
-  });
+  const onSave = vscode.workspace.onWillSaveTextDocument(
+    async (event: vscode.TextDocumentWillSaveEvent) => {
+      const config = vscode.workspace.getConfiguration("importLengthSorter");
+      if (!config.get("sortOnSave", false)) return;
+      const editor = vscode.window.visibleTextEditors.find(
+        (e: vscode.TextEditor) => e.document === event.document,
+      );
+      if (!editor) return;
+      await sortImportsInEditor(
+        editor,
+        config.get("order", "asc") as Order,
+        config.get("addBlankLineBetweenGroups", false),
+      );
+    },
+  );
 
   context.subscriptions.push(sortAsc, sortDesc, onSave);
 }
