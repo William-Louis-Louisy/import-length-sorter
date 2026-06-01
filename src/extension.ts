@@ -3,93 +3,82 @@ import * as vscode from "vscode";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface ImportStatement {
-  /** All raw lines belonging to this statement */
   lines: string[];
-  /** Collapsed single-line version used for length measurement & relative detection */
-  collapsed: string;
-  /** Whether this is a relative import (starts with . or ..) */
-  isRelative: boolean;
+  isMultiLine: boolean;
+  /** Sort key: full line for single-line, last line for multi-line */
+  sortKey: string;
 }
 
-interface ImportBlock {
-  startLine: number;
-  endLine: number;
-  statements: ImportStatement[];
-}
+// ─── Parsing ──────────────────────────────────────────────────────────────────
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/** True if this line begins a new import statement */
 function isImportStart(line: string): boolean {
   const t = line.trimStart();
   return (
-    /^import[\s{*]/.test(t) ||   // JS/TS: import ..., import {, import *
-    /^import\s*['"]/.test(t) ||  // Dart/side-effect: import "..."
-    /^from\s/.test(t) ||         // Python: from x import y
-    /^@import\s/.test(t) ||      // CSS/SCSS
-    /^require\s*\(/.test(t)      // CommonJS top-level
+    /^import[\s{*]/.test(t) ||
+    /^import\s*['"]/.test(t) ||
+    /^from\s/.test(t) ||
+    /^@import\s/.test(t) ||
+    /^require\s*\(/.test(t)
   );
 }
 
 /**
- * Parse all lines of a document into ImportBlocks.
- * A block is a maximal run of import statements with no blank lines between them.
- * Multi-line imports (open braces not yet closed) are tracked via brace depth.
+ * Parse document lines into groups of ImportStatements.
+ * A group is a maximal run of imports with no blank lines between them.
+ * Multi-line imports are tracked via brace/paren depth.
  */
-function findImportBlocks(docLines: string[]): ImportBlock[] {
-  const blocks: ImportBlock[] = [];
+function findImportGroups(
+  docLines: string[],
+): { startLine: number; statements: ImportStatement[] }[] {
+  const groups: { startLine: number; statements: ImportStatement[] }[] = [];
   let i = 0;
 
   while (i < docLines.length) {
-    // Skip non-import lines
-    if (!isImportStart(docLines[i])) { i++; continue; }
+    if (!isImportStart(docLines[i])) {
+      i++;
+      continue;
+    }
 
-    // We found the start of an import block
-    const blockStartLine = i;
+    const groupStart = i;
     const statements: ImportStatement[] = [];
 
-    // Keep consuming statements until we hit a blank line or a non-import non-continuation line
     while (i < docLines.length) {
       const line = docLines[i];
-
-      // Blank line → block ends
       if (line.trim() === "") break;
-
-      // Not a continuation and not a new import → block ends
-      // (handles cases like `const x = ...` right after imports with no blank line)
       if (!isImportStart(line) && statements.length === 0) break;
 
-      // If we're between statements (depth=0) and hit a non-import → block ends
-      // (except when we're inside a multi-line import)
-
-      // --- Collect lines for ONE statement ---
+      // Collect lines for one statement
       const stmtLines: string[] = [];
-      let depth = 0;        // brace depth
-      let parenDepth = 0;   // paren depth  (for require())
+      let depth = 0;
+      let parenDepth = 0;
       let complete = false;
 
       while (i < docLines.length) {
         const l = docLines[i];
-
-        // Blank line mid-statement should not happen in valid code, but guard anyway
         if (l.trim() === "" && stmtLines.length > 0 && depth === 0) break;
-
-        // If we're at depth 0 and this line starts a NEW import (not the first line),
-        // stop — this line belongs to the next statement
-        if (stmtLines.length > 0 && depth === 0 && parenDepth === 0 && isImportStart(l)) break;
+        if (
+          stmtLines.length > 0 &&
+          depth === 0 &&
+          parenDepth === 0 &&
+          isImportStart(l)
+        )
+          break;
 
         stmtLines.push(l);
         i++;
 
-        // Count braces / parens to track multi-line constructs
         for (const ch of l) {
-          if (ch === "{") depth++;
-          else if (ch === "}") depth--;
-          else if (ch === "(") parenDepth++;
-          else if (ch === ")") parenDepth--;
+          if (ch === "{") {
+            depth++;
+          } else if (ch === "}") {
+            depth--;
+          } else if (ch === "(") {
+            parenDepth++;
+          } else if (ch === ")") {
+            parenDepth--;
+          }
         }
 
-        // Statement is complete when balanced and the line ends with ; or a closing quote
         if (depth <= 0 && parenDepth <= 0) {
           const trimmed = l.trimEnd();
           if (
@@ -106,60 +95,112 @@ function findImportBlocks(docLines: string[]): ImportBlock[] {
 
       if (stmtLines.length === 0) break;
 
-      const collapsed = stmtLines.map(l => l.trim()).join(" ").replace(/\s+/g, " ");
-      const isRelative = /from\s+['"]\.|import\s+['"]\./.test(collapsed);
+      const isMultiLine = stmtLines.length > 1;
+      // Sort key: for multi-line = last line (the `} from '...';`), for single = full line
+      const sortKey = isMultiLine
+        ? stmtLines[stmtLines.length - 1]
+        : stmtLines[0];
 
-      statements.push({ lines: stmtLines, collapsed, isRelative });
+      statements.push({ lines: stmtLines, isMultiLine, sortKey });
 
-      if (!complete && depth <= 0 && parenDepth <= 0) {
-        // Incomplete statement (e.g. no semicolon) — still added, stop the block
-        break;
-      }
+      if (!complete && depth <= 0 && parenDepth <= 0) break;
     }
 
     if (statements.length > 0) {
-      const endLine = blockStartLine + statements.reduce((sum, s) => sum + s.lines.length, 0) - 1;
-      blocks.push({ startLine: blockStartLine, endLine, statements });
+      groups.push({ startLine: groupStart, statements });
     }
   }
 
-  return blocks;
+  return groups;
 }
 
-// ─── Sorting ──────────────────────────────────────────────────────────────────
+// ─── Sort items inside a multi-line import ────────────────────────────────────
+
+/**
+ * Given a multi-line import statement, sort its named items:
+ * - Non-type items first, ascending by trimmed length
+ * - Type items after, ascending by trimmed length
+ * Preserves the `import {` opening line, `} from '...';` closing line, and indentation.
+ */
+function sortMultiLineItems(stmt: ImportStatement): ImportStatement {
+  if (!stmt.isMultiLine) return stmt;
+
+  const lines = stmt.lines;
+  const openLine = lines[0]; // `import {`
+  const closeLine = lines[lines.length - 1]; // `} from '...';`
+  const itemLines = lines.slice(1, lines.length - 1);
+
+  if (itemLines.length === 0) return stmt;
+
+  // Detect indentation from the first item line
+  const indentMatch = itemLines[0].match(/^(\s+)/);
+  const indent = indentMatch ? indentMatch[1] : "  ";
+
+  // Parse items (each line is one item, possibly with trailing comma)
+  const items = itemLines.map((l) => l.trim().replace(/,$/, ""));
+
+  const typeItems = items.filter((item) => /^type\s/.test(item));
+  const normalItems = items.filter((item) => !/^type\s/.test(item));
+
+  normalItems.sort((a, b) => a.length - b.length);
+  typeItems.sort((a, b) => a.length - b.length);
+
+  const sortedItems = [...normalItems, ...typeItems];
+
+  // Rebuild lines with original indentation and trailing commas
+  const newItemLines = sortedItems.map((item, idx) => {
+    const isLast = idx === sortedItems.length - 1;
+    return `${indent}${item}${isLast ? "," : ","}`;
+  });
+
+  const newLines = [openLine, ...newItemLines, closeLine];
+  const newSortKey = closeLine;
+
+  return { lines: newLines, isMultiLine: true, sortKey: newSortKey };
+}
+
+// ─── Sort a group ─────────────────────────────────────────────────────────────
 
 type Order = "asc" | "desc";
 
-function sortStatements(stmts: ImportStatement[], order: Order): ImportStatement[] {
-  return [...stmts].sort((a, b) => {
-    const diff = a.collapsed.length - b.collapsed.length;
-    return order === "asc" ? diff : -diff;
-  });
-}
-
-function sortBlock(block: ImportBlock, order: Order, groupSeparator: boolean): string | null {
-  const { statements } = block;
+function sortGroup(
+  statements: ImportStatement[],
+  order: Order,
+  groupSeparator: boolean,
+): string | null {
   if (statements.length <= 1) return null;
 
-  let sorted: ImportStatement[];
+  // First sort items inside each multi-line import
+  const processed = statements.map((s) =>
+    s.isMultiLine ? sortMultiLineItems(s) : s,
+  );
 
+  // Then sort all statements by their sort key length
+  const sorted = [...processed].sort((a, b) => {
+    const diff = a.sortKey.trimEnd().length - b.sortKey.trimEnd().length;
+    return order === "asc" ? diff : -diff;
+  });
+
+  // Optional: separate node_modules from relative imports
+  let final: ImportStatement[];
   if (groupSeparator) {
-    const node = statements.filter(s => !s.isRelative);
-    const relative = statements.filter(s => s.isRelative);
-    const sortedNode = sortStatements(node, order);
-    const sortedRelative = sortStatements(relative, order);
-    sorted = [...sortedNode];
-    if (sortedNode.length > 0 && sortedRelative.length > 0) {
-      // Insert a blank-line separator as a fake statement
-      sorted.push({ lines: [""], collapsed: "", isRelative: false });
-    }
-    sorted.push(...sortedRelative);
+    const isRelative = (s: ImportStatement) =>
+      /from\s+['"]\.|import\s+['"]\./.test(s.lines.join(" "));
+    const node = sorted.filter((s) => !isRelative(s));
+    const relative = sorted.filter((s) => isRelative(s));
+    final = [
+      ...node,
+      ...(node.length > 0 && relative.length > 0
+        ? [{ lines: [""], isMultiLine: false, sortKey: "" }]
+        : []),
+      ...relative,
+    ];
   } else {
-    sorted = sortStatements(statements, order);
+    final = sorted;
   }
 
-  const newText = sorted.map(s => s.lines.join("\n")).join("\n");
-  const oldText = statements.map(s => s.lines.join("\n")).join("\n");
+  const newText = final.map((s) => s.lines.join("\n")).join("\n");
+  const oldText = statements.map((s) => s.lines.join("\n")).join("\n");
 
   return newText !== oldText ? newText : null;
 }
@@ -169,22 +210,30 @@ function sortBlock(block: ImportBlock, order: Order, groupSeparator: boolean): s
 async function sortImportsInEditor(
   editor: vscode.TextEditor,
   order: Order,
-  groupSeparator: boolean
+  groupSeparator: boolean,
 ): Promise<number> {
   const doc = editor.document;
-  const allLines = Array.from({ length: doc.lineCount }, (_, i) => doc.lineAt(i).text);
+  const allLines = Array.from(
+    { length: doc.lineCount },
+    (_, i) => doc.lineAt(i).text,
+  );
 
-  const blocks = findImportBlocks(allLines);
-  if (blocks.length === 0) return 0;
+  const groups = findImportGroups(allLines);
+  if (groups.length === 0) return 0;
 
   let count = 0;
-  await editor.edit(builder => {
-    for (const block of blocks) {
-      const newText = sortBlock(block, order, groupSeparator);
+  await editor.edit((builder) => {
+    for (const group of groups) {
+      const newText = sortGroup(group.statements, order, groupSeparator);
       if (newText !== null) {
+        const totalLines = group.statements.reduce(
+          (sum, s) => sum + s.lines.length,
+          0,
+        );
+        const endLine = group.startLine + totalLines - 1;
         const range = new vscode.Range(
-          new vscode.Position(block.startLine, 0),
-          new vscode.Position(block.endLine, allLines[block.endLine].length)
+          new vscode.Position(group.startLine, 0),
+          new vscode.Position(endLine, allLines[endLine].length),
         );
         builder.replace(range, newText);
         count++;
@@ -198,36 +247,55 @@ async function sortImportsInEditor(
 // ─── Extension entry points ───────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext) {
+  const sortAsc = vscode.commands.registerCommand(
+    "importLengthSorter.sort",
+    async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+      const config = vscode.workspace.getConfiguration("importLengthSorter");
+      const n = await sortImportsInEditor(
+        editor,
+        "asc",
+        config.get("addBlankLineBetweenGroups", false),
+      );
+      vscode.window.showInformationMessage(
+        n > 0
+          ? `✅ ${n} bloc(s) trié(s) (croissant).`
+          : "ℹ️ Imports déjà triés.",
+      );
+    },
+  );
 
-  const sortAsc = vscode.commands.registerCommand("importLengthSorter.sort", async () => {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) return;
-    const config = vscode.workspace.getConfiguration("importLengthSorter");
-    const n = await sortImportsInEditor(editor, "asc", config.get("addBlankLineBetweenGroups", false));
-    vscode.window.showInformationMessage(
-      n > 0 ? `✅ ${n} bloc(s) trié(s) (croissant).` : "ℹ️ Imports déjà triés."
-    );
-  });
+  const sortDesc = vscode.commands.registerCommand(
+    "importLengthSorter.sortDesc",
+    async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+      const config = vscode.workspace.getConfiguration("importLengthSorter");
+      const n = await sortImportsInEditor(
+        editor,
+        "desc",
+        config.get("addBlankLineBetweenGroups", false),
+      );
+      vscode.window.showInformationMessage(
+        n > 0
+          ? `✅ ${n} bloc(s) trié(s) (décroissant).`
+          : "ℹ️ Imports déjà triés.",
+      );
+    },
+  );
 
-  const sortDesc = vscode.commands.registerCommand("importLengthSorter.sortDesc", async () => {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) return;
-    const config = vscode.workspace.getConfiguration("importLengthSorter");
-    const n = await sortImportsInEditor(editor, "desc", config.get("addBlankLineBetweenGroups", false));
-    vscode.window.showInformationMessage(
-      n > 0 ? `✅ ${n} bloc(s) trié(s) (décroissant).` : "ℹ️ Imports déjà triés."
-    );
-  });
-
-  const onSave = vscode.workspace.onWillSaveTextDocument(async event => {
+  const onSave = vscode.workspace.onWillSaveTextDocument(async (event) => {
     const config = vscode.workspace.getConfiguration("importLengthSorter");
     if (!config.get("sortOnSave", false)) return;
-    const editor = vscode.window.visibleTextEditors.find(e => e.document === event.document);
+    const editor = vscode.window.visibleTextEditors.find(
+      (e) => e.document === event.document,
+    );
     if (!editor) return;
     await sortImportsInEditor(
       editor,
       config.get("order", "asc") as Order,
-      config.get("addBlankLineBetweenGroups", false)
+      config.get("addBlankLineBetweenGroups", false),
     );
   });
 
