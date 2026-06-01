@@ -2,7 +2,7 @@
   "name": "import-length-sorter",
   "displayName": "Import Length Sorter",
   "description": "Sorts import statements by line length (shortest to longest)",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "221-BakerScript",
   "author": "William Louis-Louisy",
   "license": "MIT",
@@ -14,8 +14,12 @@
     "typescript",
     "javascript"
   ],
+  "repository": {
+  "type": "git",
+  "url": "https://github.com/William-Louis-Louisy/import-length-sorter"
+},
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.120.0"
   },
   "categories": [
     "Formatters"
